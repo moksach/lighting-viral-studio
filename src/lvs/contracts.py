@@ -49,6 +49,7 @@ class DetectionConfig:
     detection_mode: str = "Balanced"
     profile: str = "Normal storm video"
     sample_fps: float = 12.0
+    scan_every_frame: bool = True
     refine_full_fps: bool = True
     bright_threshold: int = 205
     min_bright_pct: float = 0.25
@@ -61,7 +62,7 @@ class DetectionConfig:
     suppress_static_lights: bool = True
     auto_reject_low_confidence: bool = True
     min_export_score: float = 0.30
-    max_events: int = 80
+    max_events: int = 0
 
 
 @dataclass

@@ -42,8 +42,11 @@ if "edited_events_df" not in st.session_state:
     st.session_state.edited_events_df = None
 if "last_video_path" not in st.session_state:
     st.session_state.last_video_path = None
-if "profile_applied" not in st.session_state:
-    st.session_state.profile_applied = "Storm with road/street lights (recommended)"
+if st.session_state.get("profile_default_version") != 2:
+    st.session_state.profile_applied = "Find every possible strike (review mode)"
+    st.session_state.profile_default_version = 2
+elif "profile_applied" not in st.session_state:
+    st.session_state.profile_applied = "Find every possible strike (review mode)"
 
 workdir = Path(st.session_state.working_dir)
 workdir.mkdir(parents=True, exist_ok=True)
@@ -110,24 +113,27 @@ def sidebar_configs() -> tuple[DetectionConfig, TrimConfig, CropConfig, ExportCo
     profile = st.sidebar.selectbox("Starting preset", list(DETECTION_PROFILES.keys()), index=list(DETECTION_PROFILES.keys()).index(st.session_state.profile_applied) if st.session_state.profile_applied in DETECTION_PROFILES else 0)
     defaults, trim_defaults, crop_defaults, export_defaults = default_configs(profile)
     st.session_state.profile_applied = profile
-    st.sidebar.caption("Recommended mode ignores road/headlight activity and exports only strong lightning candidates by default.")
+    st.sidebar.caption("Review mode casts the widest net: every frame is scanned, weak candidates are shown, and you decide what to export.")
 
-    auto_reject_low_confidence = st.sidebar.checkbox("Export only likely lightning by default", value=bool(defaults.auto_reject_low_confidence))
+    auto_reject_low_confidence = st.sidebar.checkbox("Auto-uncheck weak/headlight-like candidates", value=bool(defaults.auto_reject_low_confidence))
 
     with st.sidebar.expander("Advanced detection controls", expanded=False):
-        sample_fps = st.slider("First-pass analysis FPS", 2.0, 30.0, float(defaults.sample_fps), 1.0)
+        scan_every_frame = st.checkbox("Scan every frame for candidates", value=bool(defaults.scan_every_frame), help="Best for finding brief lightning sticks. Turn off only for a faster rough pass.")
+        sample_fps = st.slider("First-pass analysis FPS", 1.0, 60.0, float(defaults.sample_fps), 1.0, disabled=scan_every_frame)
         refine_full_fps = st.checkbox("Refine first/last light frames at full FPS", value=True)
         bright_threshold = st.slider("Bright pixel threshold", 120, 255, int(defaults.bright_threshold), 1)
         min_bright_pct = st.slider("Minimum bright pixels (%)", 0.01, 10.0, float(defaults.min_bright_pct), 0.01)
-        delta_mean_threshold = st.slider("Sudden brightness jump", 1.0, 80.0, float(defaults.delta_mean_threshold), 0.5)
-        delta_p99_threshold = st.slider("Highlight jump sensitivity", 1.0, 120.0, float(defaults.delta_p99_threshold), 0.5)
+        delta_mean_threshold = st.slider("Sudden brightness jump", 0.5, 80.0, float(defaults.delta_mean_threshold), 0.5)
+        delta_p99_threshold = st.slider("Highlight jump sensitivity", 0.5, 120.0, float(defaults.delta_p99_threshold), 0.5)
         merge_gap_sec = st.slider("Merge flashes within seconds", 0.05, 2.5, float(defaults.merge_gap_sec), 0.05)
         ignore_bottom_pct = st.slider("Ignore bottom of frame (%)", 0.0, 50.0, float(defaults.ignore_bottom_pct), 1.0, help="Useful if streetlights/traffic appear at the bottom.")
         suppress_static_lights = st.checkbox("Suppress static lights", value=bool(defaults.suppress_static_lights))
         min_export_score = st.slider("Minimum export confidence score", 0.05, 0.80, float(defaults.min_export_score), 0.05)
+        max_candidates = st.number_input("Maximum candidates to show (0 = no limit)", min_value=0, max_value=10000, value=int(defaults.max_events), step=10)
 
     det = DetectionConfig(
         detection_mode=detection_mode, profile=profile, sample_fps=sample_fps,
+        scan_every_frame=scan_every_frame,
         refine_full_fps=refine_full_fps, bright_threshold=bright_threshold,
         min_bright_pct=min_bright_pct, delta_mean_threshold=delta_mean_threshold,
         delta_p99_threshold=delta_p99_threshold, merge_gap_sec=merge_gap_sec,
@@ -135,6 +141,7 @@ def sidebar_configs() -> tuple[DetectionConfig, TrimConfig, CropConfig, ExportCo
         ignore_bottom_pct=ignore_bottom_pct, suppress_static_lights=suppress_static_lights,
         auto_reject_low_confidence=auto_reject_low_confidence,
         min_export_score=min_export_score,
+        max_events=int(max_candidates),
     )
 
     st.sidebar.header("3. Trim")
@@ -181,8 +188,8 @@ st.caption(f"{APP_VERSION} - find real lightning, reject headlights, cut export-
 st.markdown(
     """
     <div class="lvs-step">
-    Workflow: choose video -> find lightning clips -> review candidates -> export clips/reel -> use the social pack.
-    The recommended preset is tuned for storm footage with road lights in the lower frame.
+    Workflow: choose video -> find every possible candidate -> review and choose clips -> export clips/reel -> use the social pack.
+    Default review mode scans every frame and does not hide weak candidates.
     </div>
     """,
     unsafe_allow_html=True,
@@ -287,7 +294,7 @@ if analysis:
         cols = st.columns(3)
         cols[0].metric("Top score", f"{max(e.score for e in events):.2f}")
         cols[1].metric("Selected seconds", f"{sum(e.duration for e in selected_initial):.1f}")
-        cols[2].metric("Ignored bottom", f"{saved_det.ignore_bottom_pct:.0f}%")
+        cols[2].metric("Scan mode", "Every frame" if saved_det.scan_every_frame else f"{saved_det.sample_fps:.0f} FPS")
 
         st.subheader("Review candidates")
         st.caption("Only checked rows are exported. Rejected rows stay visible so you can override the detector if needed.")
@@ -392,14 +399,18 @@ if analysis:
         with tabs[3]:
             st.markdown("#### Viral reel plan")
             if selected_events:
-                max_compilation_events = st.slider(
-                    "Max events in compilation",
-                    1,
-                    len(selected_events),
-                    min(len(selected_events), export.max_compilation_events),
-                    1,
-                )
-                export.max_compilation_events = max_compilation_events
+                if len(selected_events) == 1:
+                    export.max_compilation_events = 1
+                    st.caption("One selected event is available for the reel.")
+                else:
+                    max_compilation_events = st.slider(
+                        "Max events in compilation",
+                        1,
+                        len(selected_events),
+                        min(len(selected_events), export.max_compilation_events),
+                        1,
+                    )
+                    export.max_compilation_events = max_compilation_events
                 planned = plan_compilation(selected_events, export.ordering, export.max_compilation_events, export.target_compilation_sec)
             else:
                 planned = []

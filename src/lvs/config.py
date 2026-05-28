@@ -26,41 +26,53 @@ DETECTION_MODES = [
 ]
 
 DETECTION_PROFILES: Dict[str, Dict[str, Any]] = {
+    "Find every possible strike (review mode)": dict(
+        bright_threshold=165, min_bright_pct=0.01, delta_mean_threshold=3.0,
+        delta_p99_threshold=5.0, merge_gap_sec=0.35, sample_fps=30.0,
+        scan_every_frame=True, ignore_bottom_pct=0.0, suppress_static_lights=False,
+        auto_reject_low_confidence=False, min_export_score=0.05, max_events=0,
+    ),
     "Storm with road/street lights (recommended)": dict(
         bright_threshold=210, min_bright_pct=0.20, delta_mean_threshold=10.0,
         delta_p99_threshold=16.0, merge_gap_sec=0.45, sample_fps=12.0,
+        scan_every_frame=True,
         ignore_bottom_pct=30.0, suppress_static_lights=True,
-        auto_reject_low_confidence=True, min_export_score=0.30,
+        auto_reject_low_confidence=True, min_export_score=0.30, max_events=0,
     ),
     "Normal storm video": dict(
         bright_threshold=205, min_bright_pct=0.25, delta_mean_threshold=12.0,
         delta_p99_threshold=18.0, merge_gap_sec=0.45, sample_fps=12.0,
+        scan_every_frame=True,
         ignore_bottom_pct=18.0, suppress_static_lights=True,
-        auto_reject_low_confidence=True, min_export_score=0.30,
+        auto_reject_low_confidence=True, min_export_score=0.30, max_events=0,
     ),
     "Very dark sky": dict(
         bright_threshold=185, min_bright_pct=0.12, delta_mean_threshold=8.0,
         delta_p99_threshold=12.0, merge_gap_sec=0.55, sample_fps=12.0,
+        scan_every_frame=True,
         ignore_bottom_pct=20.0, suppress_static_lights=True,
-        auto_reject_low_confidence=True, min_export_score=0.25,
+        auto_reject_low_confidence=True, min_export_score=0.25, max_events=0,
     ),
     "City lights / false positives": dict(
         bright_threshold=225, min_bright_pct=0.45, delta_mean_threshold=18.0,
         delta_p99_threshold=28.0, merge_gap_sec=0.35, sample_fps=15.0,
+        scan_every_frame=True,
         ignore_bottom_pct=35.0, suppress_static_lights=True,
-        auto_reject_low_confidence=True, min_export_score=0.35,
+        auto_reject_low_confidence=True, min_export_score=0.35, max_events=0,
     ),
     "Fast many strikes": dict(
         bright_threshold=200, min_bright_pct=0.20, delta_mean_threshold=10.0,
         delta_p99_threshold=15.0, merge_gap_sec=0.25, sample_fps=20.0,
+        scan_every_frame=True,
         ignore_bottom_pct=25.0, suppress_static_lights=True,
-        auto_reject_low_confidence=True, min_export_score=0.30,
+        auto_reject_low_confidence=True, min_export_score=0.30, max_events=0,
     ),
     "Cloud glow heavy rain": dict(
         bright_threshold=180, min_bright_pct=0.08, delta_mean_threshold=6.0,
         delta_p99_threshold=10.0, merge_gap_sec=0.65, sample_fps=12.0,
+        scan_every_frame=True,
         ignore_bottom_pct=20.0, suppress_static_lights=False,
-        auto_reject_low_confidence=True, min_export_score=0.22,
+        auto_reject_low_confidence=True, min_export_score=0.22, max_events=0,
     ),
 }
 
@@ -118,6 +130,6 @@ def migrate_config(payload: Dict[str, Any]) -> Dict[str, Any]:
     return migrated
 
 
-def default_configs(profile: str = "Storm with road/street lights (recommended)") -> tuple[DetectionConfig, TrimConfig, CropConfig, ExportConfig]:
+def default_configs(profile: str = "Find every possible strike (review mode)") -> tuple[DetectionConfig, TrimConfig, CropConfig, ExportConfig]:
     det = apply_profile(DetectionConfig(), profile)
     return det, TrimConfig(), CropConfig(), ExportConfig()

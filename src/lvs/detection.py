@@ -78,9 +78,6 @@ def analyze_frame(
     delta_p99 = 0.0 if prev is None else p99 - prev.p99_luma
     delta_bright = 0.0 if prev is None else bright_pct - prev.bright_pct
 
-    edges = cv2.Canny(gray, 80, 180)
-    edge_energy = float(edges.mean() / 255.0)
-
     reason_parts: List[str] = []
     mode = cfg.detection_mode
 
@@ -126,9 +123,18 @@ def analyze_frame(
             is_light = False
             reason_parts.append("static_suppressed")
 
+    edge_energy = 0.0
+    if cfg.min_edge_energy > 0:
+        edges = cv2.Canny(gray, 80, 180)
+        edge_energy = float(edges.mean() / 255.0)
+
     if cfg.min_edge_energy > 0 and edge_energy < cfg.min_edge_energy and mode != "Cloud glow / behind-cloud flash":
         is_light = False
         reason_parts.append("low_structure")
+
+    if is_light and edge_energy == 0.0:
+        edges = cv2.Canny(gray, 80, 180)
+        edge_energy = float(edges.mean() / 255.0)
 
     bbox = None
     if is_light:
@@ -164,7 +170,7 @@ def sample_video_signals(video_path: str, info: VideoInfo, cfg: DetectionConfig,
     if not cap.isOpened():
         raise RuntimeError("Could not open video for analysis")
 
-    step = max(1, int(round(info.fps / max(0.5, cfg.sample_fps))))
+    step = 1 if cfg.scan_every_frame else max(1, int(round(info.fps / max(0.5, cfg.sample_fps))))
     resize_w = min(480, int(info.width))
     scale = resize_w / max(1, info.width) if info.width > resize_w else 1.0
     resize_h = max(2, int(round(info.height * scale)))
@@ -192,7 +198,7 @@ def sample_video_signals(video_path: str, info: VideoInfo, cfg: DetectionConfig,
     return pd.DataFrame(rows)
 
 
-def group_candidate_windows(frame_df: pd.DataFrame, merge_gap_sec: float, max_events: int = 80) -> List[Tuple[float, float]]:
+def group_candidate_windows(frame_df: pd.DataFrame, merge_gap_sec: float, max_events: int = 0) -> List[Tuple[float, float]]:
     if frame_df.empty or "is_light" not in frame_df.columns:
         return []
     light = frame_df[frame_df["is_light"] == True].copy()  # noqa: E712
@@ -207,11 +213,51 @@ def group_candidate_windows(frame_df: pd.DataFrame, merge_gap_sec: float, max_ev
             prev = t
         else:
             windows.append((start, prev))
-            if len(windows) >= max_events:
+            if max_events > 0 and len(windows) >= max_events:
                 return windows
             start = prev = t
     windows.append((start, prev))
-    return windows[:max_events]
+    return windows[:max_events] if max_events > 0 else windows
+
+
+def peak_candidate_windows(frame_df: pd.DataFrame, merge_gap_sec: float, max_events: int = 0) -> List[Tuple[float, float]]:
+    if frame_df.empty or "is_light" not in frame_df.columns:
+        return []
+    light = frame_df[frame_df["is_light"] == True].copy()  # noqa: E712
+    if light.empty:
+        return []
+
+    light["_impact"] = (
+        light.get("bright_pct", 0).astype(float) * 3.0
+        + light.get("delta_mean", 0).clip(lower=0).astype(float) * 0.15
+        + light.get("delta_p99", 0).clip(lower=0).astype(float) * 0.08
+        + light.get("max_luma", 0).clip(lower=0).astype(float) / 255.0 * 0.12
+    )
+    prev_impact = light["_impact"].shift(1).fillna(-1.0)
+    next_impact = light["_impact"].shift(-1).fillna(-1.0)
+    peak_floor = max(0.18, float(light["_impact"].quantile(0.55)))
+    peaks_df = light[
+        (light["_impact"] >= peak_floor)
+        & (light["_impact"] >= prev_impact)
+        & (light["_impact"] > next_impact)
+    ].copy()
+    if peaks_df.empty:
+        peaks_df = light.sort_values("_impact", ascending=False).head(1).copy()
+
+    min_gap = max(0.05, min(0.45, float(merge_gap_sec)))
+    half_window = max(0.08, min(0.50, min_gap * 0.75))
+
+    peaks: List[Tuple[float, float]] = []
+    for _, row in peaks_df.sort_values("_impact", ascending=False).iterrows():
+        t = float(row["time"])
+        if any(abs(t - kept_t) < min_gap for kept_t, _ in peaks):
+            continue
+        peaks.append((t, float(row["_impact"])))
+
+    peaks.sort(key=lambda item: item[0])
+    if max_events > 0:
+        peaks = peaks[:max_events]
+    return [(max(0.0, t - half_window), t + half_window) for t, _ in peaks]
 
 
 def refine_window_full_fps(video_path: str, info: VideoInfo, rough_start: float, rough_end: float, cfg: DetectionConfig) -> pd.DataFrame:
@@ -320,7 +366,7 @@ def _dedupe_events(events: List[LightningEvent]) -> List[LightningEvent]:
                 continue
             shorter = max(0.05, min(event.duration, kept.duration))
             peak_gap = abs(event.peak_time - kept.peak_time)
-            if overlap / shorter >= 0.65 or peak_gap <= 0.35:
+            if overlap / shorter >= 0.95 and peak_gap <= 0.08:
                 duplicate_at = i
                 break
         if duplicate_at is None:
@@ -346,7 +392,7 @@ def build_events(
     crop: CropConfig,
     progress: Progress = None,
 ) -> Tuple[List[LightningEvent], pd.DataFrame]:
-    rough_windows = group_candidate_windows(sampled_df, det.merge_gap_sec, det.max_events)
+    rough_windows = peak_candidate_windows(sampled_df, det.merge_gap_sec, det.max_events) if det.scan_every_frame else group_candidate_windows(sampled_df, det.merge_gap_sec, det.max_events)
     if not rough_windows:
         return [], pd.DataFrame()
 
@@ -357,7 +403,9 @@ def build_events(
     for i, (rough_start, rough_end) in enumerate(rough_windows, start=1):
         if progress:
             progress(0.58 + 0.32 * (i - 1) / max(1, len(rough_windows)), "Refining lightning windows")
-        if det.refine_full_fps:
+        if det.scan_every_frame:
+            refined = sampled_df[(sampled_df["time"] >= rough_start) & (sampled_df["time"] <= rough_end)].copy()
+        elif det.refine_full_fps:
             refined = refine_window_full_fps(video_path, info, rough_start, rough_end, det)
         else:
             refined = sampled_df[(sampled_df["time"] >= rough_start) & (sampled_df["time"] <= rough_end)].copy()
