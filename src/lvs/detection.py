@@ -264,6 +264,79 @@ def _structure_score(light_df: pd.DataFrame) -> float:
     return min(1.0, edge / 0.09)
 
 
+def _event_notes(
+    event_type: str,
+    score: float,
+    confidence: float,
+    peak_delta_mean: float,
+    peak_delta_p99: float,
+    det: DetectionConfig,
+    crop_box: Optional[Tuple[int, int, int, int]],
+    info: VideoInfo,
+) -> tuple[bool, str]:
+    notes: List[str] = []
+    include = True
+
+    strong_sky_flash = (
+        peak_delta_mean >= det.delta_mean_threshold
+        or peak_delta_p99 >= det.delta_p99_threshold
+        or score >= max(0.45, det.min_export_score + 0.15)
+    )
+    weak_candidate = score < det.min_export_score or confidence < 0.58
+    weak_glow = event_type == "cloud glow" and not strong_sky_flash
+    low_local_light = False
+    if crop_box is not None:
+        _, y, _, h = crop_box
+        center_y = (y + h / 2.0) / max(1, info.height)
+        height_pct = h / max(1, info.height)
+        low_local_light = center_y > 0.58 and height_pct < 0.22
+
+    if det.auto_reject_low_confidence and low_local_light:
+        include = False
+        notes.append("Rejected by default: low localized flash; likely vehicle light or road reflection.")
+    elif det.auto_reject_low_confidence and (weak_candidate or weak_glow):
+        include = False
+        notes.append("Rejected by default: weak flash signature; likely headlights, reflection, or exposure noise.")
+    elif score >= 0.65 and confidence >= 0.75:
+        notes.append("High confidence lightning. Good export candidate.")
+    elif strong_sky_flash:
+        notes.append("Likely lightning sky flash. Review once before export.")
+    else:
+        notes.append("Needs review before export.")
+
+    return include, " ".join(notes)
+
+
+def _dedupe_events(events: List[LightningEvent]) -> List[LightningEvent]:
+    if not events:
+        return []
+    ordered = sorted(events, key=lambda e: (e.start_time, e.end_time, -e.score))
+    deduped: List[LightningEvent] = []
+    for event in ordered:
+        duplicate_at = None
+        for i, kept in enumerate(deduped):
+            overlap = min(event.end_time, kept.end_time) - max(event.start_time, kept.start_time)
+            if overlap <= 0:
+                continue
+            shorter = max(0.05, min(event.duration, kept.duration))
+            peak_gap = abs(event.peak_time - kept.peak_time)
+            if overlap / shorter >= 0.65 or peak_gap <= 0.35:
+                duplicate_at = i
+                break
+        if duplicate_at is None:
+            deduped.append(event)
+            continue
+        kept = deduped[duplicate_at]
+        if (event.include, event.score, event.confidence) > (kept.include, kept.score, kept.confidence):
+            event.notes = (event.notes + " Duplicate overlap merged.").strip()
+            deduped[duplicate_at] = event
+        else:
+            kept.notes = (kept.notes + " Duplicate overlap merged.").strip()
+    for idx, event in enumerate(deduped, start=1):
+        event.index = idx
+    return deduped
+
+
 def build_events(
     video_path: str,
     info: VideoInfo,
@@ -333,9 +406,11 @@ def build_events(
             int(light.shape[0]), det.min_bright_pct, det.delta_mean_threshold,
         )
         confidence = min(1.0, max(0.05, 0.65 * conf_seed + 0.35 * crop_conf))
+        event_type = _event_type(peak_bright, crop_box, info, det.min_bright_pct)
+        include, notes = _event_notes(event_type, score, float(confidence), peak_delta, peak_delta_p99, det, crop_box, info)
 
         events.append(LightningEvent(
-            include=True,
+            include=include,
             index=len(events) + 1,
             first_light_time=round(first_light, 4),
             last_light_time=round(last_light, 4),
@@ -344,7 +419,7 @@ def build_events(
             duration=round(max(0.05, end - start), 4),
             crop_x=int(crop_x), crop_y=int(crop_y), crop_w=int(crop_w), crop_h=int(crop_h),
             score=score, confidence=round(float(confidence), 3),
-            event_type=_event_type(peak_bright, crop_box, info, det.min_bright_pct),
+            event_type=event_type,
             peak_time=round(float(peak["time"]), 4),
             peak_bright_pct=round(peak_bright, 4),
             peak_delta_mean=round(peak_delta, 4),
@@ -354,10 +429,11 @@ def build_events(
             hook_score=hook_score,
             light_frames=int(light.shape[0]),
             crop_confidence=float(crop_conf),
+            notes=notes,
         ))
 
     refined_df = pd.concat(refined_parts, ignore_index=True) if refined_parts else pd.DataFrame()
-    return events, refined_df
+    return _dedupe_events(events), refined_df
 
 
 def analyze_video(

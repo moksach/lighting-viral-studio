@@ -62,6 +62,9 @@ def plan_compilation(events: Iterable[LightningEvent], ordering: str, max_events
 
 
 def caption_ideas(events: List[LightningEvent]) -> str:
+    selected = [e for e in events if e.include]
+    if selected:
+        events = selected
     top = max([e.score for e in events], default=0.0)
     return "\n".join([
         "Caught this lightning on my phone during the storm.",

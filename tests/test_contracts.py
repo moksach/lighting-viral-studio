@@ -9,6 +9,7 @@ from lvs.config import migrate_config
 from lvs.crop import fit_crop_to_aspect
 from lvs.contracts import VideoInfo
 from lvs.diagnostics import signal_summary, tuning_recommendations
+from lvs.social import social_pack_text
 
 
 def test_schema_version_present():
@@ -16,6 +17,7 @@ def test_schema_version_present():
     assert TrimConfig().schema_version == SCHEMA_VERSION
     assert CropConfig().schema_version == SCHEMA_VERSION
     assert ExportConfig().schema_version == SCHEMA_VERSION
+    assert DetectionConfig().auto_reject_low_confidence is True
 
 
 def test_migration_aliases():
@@ -47,3 +49,7 @@ def test_diagnostics_no_events_recommends_tuning():
     assert summary["frames_sampled"] == 2
     assert recs
     assert "No events" in recs[0]
+
+
+def test_social_pack_handles_no_selected_events():
+    assert "No export-ready" in social_pack_text([])

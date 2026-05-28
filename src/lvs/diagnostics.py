@@ -64,6 +64,7 @@ def tuning_recommendations(
         return recs[:5]
 
     selected = [e for e in event_list if e.include]
+    rejected = [e for e in event_list if not e.include]
     weak = [e for e in selected if e.confidence < 0.45 or e.score < 0.20]
     low_crop = [e for e in selected if e.crop_confidence < 0.45]
     long_events = [e for e in selected if e.duration > 7.0]
@@ -74,6 +75,8 @@ def tuning_recommendations(
         recs.append("A large share of sampled frames were flagged. Raise Minimum bright pixels (%) or enable Suppress static lights.")
     if weak:
         recs.append("Some detections are weak. Sort the table by score, uncheck low-confidence rows, then make one preview clip before exporting.")
+    if rejected:
+        recs.append("Rejected candidates are kept for review but will not export unless you check them.")
     if low_crop:
         recs.append("Some crops are uncertain. Increase Minimum crop coverage or switch those strikes to Center crop only before export.")
     if long_events:

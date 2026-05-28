@@ -22,6 +22,7 @@ from lvs.detection import analyze_video
 from lvs.export import export_event_clip, export_package
 from lvs.registry import default_registry
 from lvs.review import dataframe_to_events, events_to_dataframe, make_contact_sheet, make_event_triptych, draw_crop_box
+from lvs.social import social_pack_text
 from lvs.utils import clean_dir, has_ffmpeg, safe_name, seconds_to_timestamp
 from lvs.video_io import get_video_info, read_frame_at, write_synthetic_lightning_video
 from lvs.viral import plan_compilation
@@ -42,10 +43,23 @@ if "edited_events_df" not in st.session_state:
 if "last_video_path" not in st.session_state:
     st.session_state.last_video_path = None
 if "profile_applied" not in st.session_state:
-    st.session_state.profile_applied = "Normal storm video"
+    st.session_state.profile_applied = "Storm with road/street lights (recommended)"
 
 workdir = Path(st.session_state.working_dir)
 workdir.mkdir(parents=True, exist_ok=True)
+
+st.markdown(
+    """
+    <style>
+    .block-container { padding-top: 1.4rem; }
+    section[data-testid="stSidebar"] h2, section[data-testid="stSidebar"] h3 { letter-spacing: 0; }
+    div[data-testid="stMetric"] { background: #f7f8fb; border: 1px solid #e7e9ef; padding: 0.75rem; border-radius: 8px; }
+    .lvs-step { border-left: 4px solid #ffb000; padding: 0.4rem 0 0.4rem 0.8rem; margin: 0.25rem 0 1rem; color: #343741; }
+    .lvs-status { font-size: 0.86rem; font-weight: 600; margin-bottom: 0.25rem; }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
 
 def hydrate_analysis(payload: dict) -> tuple[VideoInfo, pd.DataFrame, pd.DataFrame, List[LightningEvent], DetectionConfig, TrimConfig, CropConfig, ExportConfig]:
@@ -91,13 +105,16 @@ def sidebar_configs() -> tuple[DetectionConfig, TrimConfig, CropConfig, ExportCo
     elif st.session_state.last_video_path:
         video_path = st.session_state.last_video_path
 
-    st.sidebar.header("2. Detection")
+    st.sidebar.header("2. Accuracy")
     detection_mode = st.sidebar.selectbox("Lightning type", DETECTION_MODES, index=0)
     profile = st.sidebar.selectbox("Starting preset", list(DETECTION_PROFILES.keys()), index=list(DETECTION_PROFILES.keys()).index(st.session_state.profile_applied) if st.session_state.profile_applied in DETECTION_PROFILES else 0)
     defaults, trim_defaults, crop_defaults, export_defaults = default_configs(profile)
     st.session_state.profile_applied = profile
+    st.sidebar.caption("Recommended mode ignores road/headlight activity and exports only strong lightning candidates by default.")
 
-    with st.sidebar.expander("Detection controls", expanded=True):
+    auto_reject_low_confidence = st.sidebar.checkbox("Export only likely lightning by default", value=bool(defaults.auto_reject_low_confidence))
+
+    with st.sidebar.expander("Advanced detection controls", expanded=False):
         sample_fps = st.slider("First-pass analysis FPS", 2.0, 30.0, float(defaults.sample_fps), 1.0)
         refine_full_fps = st.checkbox("Refine first/last light frames at full FPS", value=True)
         bright_threshold = st.slider("Bright pixel threshold", 120, 255, int(defaults.bright_threshold), 1)
@@ -107,6 +124,7 @@ def sidebar_configs() -> tuple[DetectionConfig, TrimConfig, CropConfig, ExportCo
         merge_gap_sec = st.slider("Merge flashes within seconds", 0.05, 2.5, float(defaults.merge_gap_sec), 0.05)
         ignore_bottom_pct = st.slider("Ignore bottom of frame (%)", 0.0, 50.0, float(defaults.ignore_bottom_pct), 1.0, help="Useful if streetlights/traffic appear at the bottom.")
         suppress_static_lights = st.checkbox("Suppress static lights", value=bool(defaults.suppress_static_lights))
+        min_export_score = st.slider("Minimum export confidence score", 0.05, 0.80, float(defaults.min_export_score), 0.05)
 
     det = DetectionConfig(
         detection_mode=detection_mode, profile=profile, sample_fps=sample_fps,
@@ -115,6 +133,8 @@ def sidebar_configs() -> tuple[DetectionConfig, TrimConfig, CropConfig, ExportCo
         delta_p99_threshold=delta_p99_threshold, merge_gap_sec=merge_gap_sec,
         search_margin_sec=max(0.35, min(1.6, merge_gap_sec + 0.35)),
         ignore_bottom_pct=ignore_bottom_pct, suppress_static_lights=suppress_static_lights,
+        auto_reject_low_confidence=auto_reject_low_confidence,
+        min_export_score=min_export_score,
     )
 
     st.sidebar.header("3. Trim")
@@ -157,7 +177,16 @@ def sidebar_configs() -> tuple[DetectionConfig, TrimConfig, CropConfig, ExportCo
 # -----------------------------------------------------------------------------
 
 st.title("Lightning Viral Studio")
-st.caption(f"{APP_VERSION} - one-purpose tool: detect lightning, remove dead dark footage, crop strikes, and export a viral reel.")
+st.caption(f"{APP_VERSION} - find real lightning, reject headlights, cut export-ready clips, and prepare the post.")
+st.markdown(
+    """
+    <div class="lvs-step">
+    Workflow: choose video -> find lightning clips -> review candidates -> export clips/reel -> use the social pack.
+    The recommended preset is tuned for storm footage with road lights in the lower frame.
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
 
 with st.expander("Architecture guarantee for future builds", expanded=False):
     st.markdown(
@@ -193,7 +222,7 @@ else:
 
 analyze_col, clear_col = st.columns([1, 5])
 with analyze_col:
-    run_analysis = st.button("Analyze video", type="primary", disabled=not bool(video_path))
+    run_analysis = st.button("Find lightning clips", type="primary", disabled=not bool(video_path))
 with clear_col:
     if st.button("Clear analysis"):
         st.session_state.analysis = None
@@ -247,16 +276,21 @@ if analysis:
             st.dataframe(sampled_df.head(3000), use_container_width=True)
     else:
         selected_initial = [e for e in events if e.include]
+        rejected_initial = [e for e in events if not e.include]
         compilation_preview = plan_compilation(selected_initial, export.ordering, export.max_compilation_events, export.target_compilation_sec)
         cols = st.columns(5)
-        cols[0].metric("Events", len(events))
-        cols[1].metric("Top score", f"{max(e.score for e in events):.2f}")
-        cols[2].metric("Best hook", f"{max(e.hook_score for e in events):.2f}")
-        cols[3].metric("Selected seconds", f"{sum(e.duration for e in selected_initial):.1f}")
+        cols[0].metric("Candidates", len(events))
+        cols[1].metric("Ready to export", len(selected_initial))
+        cols[2].metric("Rejected", len(rejected_initial))
+        cols[3].metric("Best hook", f"{max(e.hook_score for e in events):.2f}")
         cols[4].metric("Planned reel", f"{sum(e.duration for e in compilation_preview):.1f}s")
+        cols = st.columns(3)
+        cols[0].metric("Top score", f"{max(e.score for e in events):.2f}")
+        cols[1].metric("Selected seconds", f"{sum(e.duration for e in selected_initial):.1f}")
+        cols[2].metric("Ignored bottom", f"{saved_det.ignore_bottom_pct:.0f}%")
 
-        st.subheader("Manual correction table")
-        st.caption("Edit `start_time`, `end_time`, and crop values directly. Uncheck weak detections. The export uses this table, not hidden state.")
+        st.subheader("Review candidates")
+        st.caption("Only checked rows are exported. Rejected rows stay visible so you can override the detector if needed.")
         editable_df = st.data_editor(
             st.session_state.edited_events_df,
             use_container_width=True,
@@ -265,7 +299,7 @@ if analysis:
             disabled=[
                 "index", "event_type", "score", "hook_score", "confidence", "crop_confidence",
                 "first_light", "last_light", "cut_start", "cut_end", "duration", "crop",
-                "peak_time", "peak_bright_pct", "peak_delta_mean", "peak_delta_p99", "structure_score", "light_frames",
+                "peak_time", "peak_bright_pct", "peak_delta_mean", "peak_delta_p99", "structure_score", "light_frames", "notes",
             ],
             column_config={
                 "include": st.column_config.CheckboxColumn("include", default=True),
@@ -285,11 +319,13 @@ if analysis:
         tabs = st.tabs(["Review", "Signal", "Tuning", "Viral plan", "Export"])
         with tabs[0]:
             st.markdown("#### Strike previews")
-            preview_count = min(12, len(selected_events))
+            preview_count = min(12, len(edited_events))
             cols = st.columns(3)
-            for j, event in enumerate(selected_events[:preview_count]):
+            for j, event in enumerate(edited_events[:preview_count]):
                 with cols[j % 3]:
-                    st.markdown(f"**Strike {event.index} - score {event.score:.2f}, hook {event.hook_score:.2f}**")
+                    status = "READY TO EXPORT" if event.include else "REJECTED BY DEFAULT"
+                    st.markdown(f"<div class='lvs-status'>{status}</div>", unsafe_allow_html=True)
+                    st.markdown(f"**Candidate {event.index} - score {event.score:.2f}, hook {event.hook_score:.2f}**")
                     triptych = make_event_triptych(info.path, event)
                     if triptych is not None:
                         st.image(triptych, use_container_width=True)
@@ -297,14 +333,14 @@ if analysis:
                         peak_frame = read_frame_at(info.path, event.peak_time)
                         if peak_frame is not None:
                             st.image(draw_crop_box(peak_frame, event), use_container_width=True)
-                    st.caption(f"{seconds_to_timestamp(event.start_time)} -> {seconds_to_timestamp(event.end_time)} | {event.event_type}")
+                    st.caption(f"{seconds_to_timestamp(event.start_time)} -> {seconds_to_timestamp(event.end_time)} | {event.event_type}. {event.notes}")
 
             with st.expander("Contact sheet for one strike"):
-                ids = [e.index for e in selected_events]
+                ids = [e.index for e in edited_events]
                 if ids:
                     pick = st.selectbox("Event", ids, index=0)
                     if st.button("Make contact sheet"):
-                        chosen = next(e for e in selected_events if e.index == pick)
+                        chosen = next(e for e in edited_events if e.index == pick)
                         sheet = make_contact_sheet(info.path, chosen)
                         if sheet is not None:
                             st.image(sheet, use_container_width=True)
@@ -312,11 +348,11 @@ if analysis:
                     st.info("No selected events.")
 
             with st.expander("Quick preview clip for one strike"):
-                ids = [e.index for e in selected_events]
+                ids = [e.index for e in edited_events]
                 if ids:
                     pick2 = st.selectbox("Preview event", ids, index=0, key="preview_event_id_final")
                     if st.button("Create preview clip", disabled=not has_ffmpeg()):
-                        chosen = next(e for e in selected_events if e.index == pick2)
+                        chosen = next(e for e in edited_events if e.index == pick2)
                         preview_export = ExportConfig(**asdict(export))
                         preview_export.keep_audio = False
                         preview_dir = workdir / "previews"
@@ -350,7 +386,7 @@ if analysis:
             cols[1].metric("Flagged frames", f"{int(summary['light_frames']):,}")
             cols[2].metric("Max bright pixels", f"{summary['max_bright_pct']:.3f}%")
             cols[3].metric("Max p99 luma", f"{summary['max_p99_luma']:.0f}")
-            for rec in tuning_recommendations(sampled_df, selected_events, saved_det):
+            for rec in tuning_recommendations(sampled_df, edited_events, saved_det):
                 st.markdown(f"- {rec}")
 
         with tabs[3]:
@@ -388,6 +424,12 @@ if analysis:
                     st.warning("The planned reel is long for a fast reel. Reduce max events or lower buffer durations.")
                 else:
                     st.success("Pacing is in a strong range for a short-form post.")
+                st.markdown("#### Social media pack")
+                st.text_area(
+                    "Hooks, captions, hashtags, and posting notes",
+                    social_pack_text(planned),
+                    height=320,
+                )
             else:
                 st.info("No selected events for a reel plan.")
 

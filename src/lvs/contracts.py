@@ -59,6 +59,8 @@ class DetectionConfig:
     search_margin_sec: float = 0.75
     ignore_bottom_pct: float = 0.0
     suppress_static_lights: bool = True
+    auto_reject_low_confidence: bool = True
+    min_export_score: float = 0.30
     max_events: int = 80
 
 

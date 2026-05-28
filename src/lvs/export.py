@@ -11,6 +11,7 @@ from .contracts import APP_VERSION, SCHEMA_VERSION, CropConfig, DetectionConfig,
 from .registry import default_registry
 from .utils import clean_dir, run_command, seconds_to_timestamp, write_json, zip_folder
 from .viral import caption_ideas, manifest_rows, plan_compilation
+from .social import social_pack_text
 
 
 def _escape_drawtext(text: str) -> str:
@@ -204,6 +205,7 @@ def export_package(
     manifest = build_project_manifest(info, det, trim, crop, export, selected, compilation_events)
     write_json(export_dir / "project_manifest.json", asdict(manifest))
     (export_dir / "caption_ideas.txt").write_text(caption_ideas(selected), encoding="utf-8")
+    (export_dir / "social_media_pack.txt").write_text(social_pack_text(selected), encoding="utf-8")
     (export_dir / "README_EXPORT.txt").write_text(
         "Lightning Viral Studio export package\n\n"
         "Files:\n"
@@ -212,7 +214,8 @@ def export_package(
         "- events_selected.csv: exact time/crop metadata\n"
         "- analysis_signal_*.csv: detection diagnostics\n"
         "- project_manifest.json: versioned reproducibility data\n"
-        "- caption_ideas.txt: quick social caption starters\n",
+        "- caption_ideas.txt: quick social caption starters\n"
+        "- social_media_pack.txt: hooks, captions, hashtags, and posting notes\n",
         encoding="utf-8",
     )
     zip_path = zip_folder(export_dir, workdir / "lightning_viral_studio_exports.zip")
