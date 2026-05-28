@@ -17,6 +17,7 @@ import streamlit as st
 
 from lvs.config import ASPECT_LABELS, DETECTION_MODES, DETECTION_PROFILES, default_configs
 from lvs.contracts import APP_VERSION, CropConfig, DetectionConfig, ExportConfig, LightningEvent, TrimConfig, VideoInfo
+from lvs.diagnostics import signal_summary, tuning_recommendations
 from lvs.detection import analyze_video
 from lvs.export import export_event_clip, export_package
 from lvs.registry import default_registry
@@ -26,7 +27,7 @@ from lvs.video_io import get_video_info, read_frame_at, write_synthetic_lightnin
 from lvs.viral import plan_compilation
 
 
-st.set_page_config(page_title="Lightning Viral Studio", page_icon="⚡", layout="wide")
+st.set_page_config(page_title="Lightning Viral Studio", page_icon=":zap:", layout="wide")
 
 # -----------------------------------------------------------------------------
 # Session state
@@ -155,8 +156,8 @@ def sidebar_configs() -> tuple[DetectionConfig, TrimConfig, CropConfig, ExportCo
 # Header
 # -----------------------------------------------------------------------------
 
-st.title("⚡ Lightning Viral Studio")
-st.caption(f"{APP_VERSION} — one-purpose tool: detect lightning, remove dead dark footage, crop strikes, and export a viral reel.")
+st.title("Lightning Viral Studio")
+st.caption(f"{APP_VERSION} - one-purpose tool: detect lightning, remove dead dark footage, crop strikes, and export a viral reel.")
 
 with st.expander("Architecture guarantee for future builds", expanded=False):
     st.markdown(
@@ -177,7 +178,7 @@ if video_path:
     try:
         info = get_video_info(video_path)
         cols = st.columns(5)
-        cols[0].metric("Resolution", f"{info.width}×{info.height}")
+        cols[0].metric("Resolution", f"{info.width}x{info.height}")
         cols[1].metric("FPS", f"{info.fps:.2f}")
         cols[2].metric("Duration", seconds_to_timestamp(info.duration))
         cols[3].metric("Frames", f"{info.frame_count:,}")
@@ -199,11 +200,11 @@ with clear_col:
         st.session_state.edited_events_df = None
 
 if run_analysis and video_path:
-    bar = st.progress(0.0, text="Preparing analysis…")
+    bar = st.progress(0.0, text="Preparing analysis...")
     try:
         info = get_video_info(video_path)
         def update_progress(p: float, label: str) -> None:
-            bar.progress(min(1.0, max(0.0, p)), text=f"{label}… {int(p*100)}%")
+            bar.progress(min(1.0, max(0.0, p)), text=f"{label}... {int(p*100)}%")
         sampled_df, refined_df, events = analyze_video(video_path, info, det, trim, crop, progress=update_progress)
         payload = {
             "info": asdict(info),
@@ -229,6 +230,21 @@ if analysis:
     st.header("Detected lightning events")
     if not events:
         st.warning("No lightning events found. Try `Very dark sky`, lower bright threshold, lower minimum bright pixels, or lower highlight/global jump thresholds.")
+        summary = signal_summary(sampled_df)
+        cols = st.columns(4)
+        cols[0].metric("Samples", f"{int(summary['frames_sampled']):,}")
+        cols[1].metric("Flagged frames", f"{int(summary['light_frames']):,}")
+        cols[2].metric("Max bright pixels", f"{summary['max_bright_pct']:.3f}%")
+        cols[3].metric("Max p99 luma", f"{summary['max_p99_luma']:.0f}")
+        st.subheader("Tuning assistant")
+        for rec in tuning_recommendations(sampled_df, events, saved_det):
+            st.markdown(f"- {rec}")
+        with st.expander("Detection signal", expanded=True):
+            cols = [c for c in ["time", "mean_luma", "p99_luma", "bright_pct", "delta_mean", "delta_p99"] if c in sampled_df.columns]
+            if cols:
+                chart_df = sampled_df[cols].copy().set_index("time")
+                st.line_chart(chart_df)
+            st.dataframe(sampled_df.head(3000), use_container_width=True)
     else:
         selected_initial = [e for e in events if e.include]
         compilation_preview = plan_compilation(selected_initial, export.ordering, export.max_compilation_events, export.target_compilation_sec)
@@ -266,14 +282,14 @@ if analysis:
         edited_events = dataframe_to_events(editable_df, events, info)
         selected_events = [e for e in edited_events if e.include]
 
-        tabs = st.tabs(["Review", "Signal", "Viral plan", "Export"])
+        tabs = st.tabs(["Review", "Signal", "Tuning", "Viral plan", "Export"])
         with tabs[0]:
             st.markdown("#### Strike previews")
             preview_count = min(12, len(selected_events))
             cols = st.columns(3)
             for j, event in enumerate(selected_events[:preview_count]):
                 with cols[j % 3]:
-                    st.markdown(f"**Strike {event.index} — score {event.score:.2f}, hook {event.hook_score:.2f}**")
+                    st.markdown(f"**Strike {event.index} - score {event.score:.2f}, hook {event.hook_score:.2f}**")
                     triptych = make_event_triptych(info.path, event)
                     if triptych is not None:
                         st.image(triptych, use_container_width=True)
@@ -281,7 +297,7 @@ if analysis:
                         peak_frame = read_frame_at(info.path, event.peak_time)
                         if peak_frame is not None:
                             st.image(draw_crop_box(peak_frame, event), use_container_width=True)
-                    st.caption(f"{seconds_to_timestamp(event.start_time)} → {seconds_to_timestamp(event.end_time)} | {event.event_type}")
+                    st.caption(f"{seconds_to_timestamp(event.start_time)} -> {seconds_to_timestamp(event.end_time)} | {event.event_type}")
 
             with st.expander("Contact sheet for one strike"):
                 ids = [e.index for e in selected_events]
@@ -327,10 +343,30 @@ if analysis:
                     st.dataframe(refined_df.head(3000), use_container_width=True)
 
         with tabs[2]:
+            st.markdown("#### Tuning assistant")
+            summary = signal_summary(sampled_df)
+            cols = st.columns(4)
+            cols[0].metric("Samples", f"{int(summary['frames_sampled']):,}")
+            cols[1].metric("Flagged frames", f"{int(summary['light_frames']):,}")
+            cols[2].metric("Max bright pixels", f"{summary['max_bright_pct']:.3f}%")
+            cols[3].metric("Max p99 luma", f"{summary['max_p99_luma']:.0f}")
+            for rec in tuning_recommendations(sampled_df, selected_events, saved_det):
+                st.markdown(f"- {rec}")
+
+        with tabs[3]:
             st.markdown("#### Viral reel plan")
-            max_compilation_events = st.slider("Max events in compilation", 1, max(1, len(selected_events)), min(len(selected_events), export.max_compilation_events), 1)
-            export.max_compilation_events = max_compilation_events
-            planned = plan_compilation(selected_events, export.ordering, export.max_compilation_events, export.target_compilation_sec)
+            if selected_events:
+                max_compilation_events = st.slider(
+                    "Max events in compilation",
+                    1,
+                    len(selected_events),
+                    min(len(selected_events), export.max_compilation_events),
+                    1,
+                )
+                export.max_compilation_events = max_compilation_events
+                planned = plan_compilation(selected_events, export.ordering, export.max_compilation_events, export.target_compilation_sec)
+            else:
+                planned = []
             if planned:
                 plan_df = pd.DataFrame([
                     {
@@ -338,7 +374,7 @@ if analysis:
                         "strike": e.index,
                         "score": e.score,
                         "hook_score": e.hook_score,
-                        "time": f"{seconds_to_timestamp(e.start_time)}–{seconds_to_timestamp(e.end_time)}",
+                        "time": f"{seconds_to_timestamp(e.start_time)}-{seconds_to_timestamp(e.end_time)}",
                         "duration": e.duration,
                         "type": e.event_type,
                     }
@@ -355,7 +391,7 @@ if analysis:
             else:
                 st.info("No selected events for a reel plan.")
 
-        with tabs[3]:
+        with tabs[4]:
             st.markdown("#### Export package")
             if not has_ffmpeg():
                 st.error("FFmpeg is missing. Install FFmpeg and confirm `ffmpeg -version` works.")
@@ -364,7 +400,7 @@ if analysis:
             export.export_individual_clips = st.checkbox("Export individual strike clips", value=True)
             export.export_compilation = st.checkbox("Export final viral reel", value=True)
             if st.button("Export selected clips + reel", type="primary", disabled=(not selected_events or not has_ffmpeg())):
-                bar = st.progress(0.0, text="Exporting package…")
+                bar = st.progress(0.0, text="Exporting package...")
                 try:
                     zip_path, exported, compilation_path, logs = export_package(
                         info.path, info, selected_events, sampled_df, refined_df,

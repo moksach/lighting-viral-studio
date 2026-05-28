@@ -64,9 +64,9 @@ def plan_compilation(events: Iterable[LightningEvent], ordering: str, max_events
 def caption_ideas(events: List[LightningEvent]) -> str:
     top = max([e.score for e in events], default=0.0)
     return "\n".join([
-        "Caught this lightning on my phone during the storm ⚡",
+        "Caught this lightning on my phone during the storm.",
         "Wait for the sky to light up.",
-        "The strongest strike is first — the rest kept coming.",
+        "The strongest strike is first - the rest kept coming.",
         f"Auto-cut from dark footage. Top strike score: {top:.2f}.",
         "#lightning #storm #thunderstorm #nature #caughtonphone #reels #shorts",
     ]) + "\n"

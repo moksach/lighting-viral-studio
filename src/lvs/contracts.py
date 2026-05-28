@@ -74,7 +74,7 @@ class TrimConfig:
 @dataclass
 class CropConfig:
     schema_version: str = SCHEMA_VERSION
-    aspect_label: str = "9:16 vertical — Reels / Shorts / TikTok"
+    aspect_label: str = "9:16 vertical - Reels / Shorts / TikTok"
     crop_mode: str = "Smart per-strike crop"
     crop_padding_pct: float = 0.70
     min_crop_coverage: float = 0.55

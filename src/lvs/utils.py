@@ -64,14 +64,33 @@ def even_int(value: float, lo: int = 2) -> int:
 
 def run_command(cmd: Sequence[str]) -> Tuple[bool, str]:
     try:
+        resolved = list(cmd)
+        if resolved:
+            resolved[0] = _resolve_command(resolved[0])
         p = subprocess.run(
-            list(cmd), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            resolved, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
             check=False, text=True
         )
         output = (p.stdout or "") + (("\n" if p.stdout and p.stderr else "") + (p.stderr or ""))
         return p.returncode == 0, output.strip()
     except FileNotFoundError as exc:
         return False, str(exc)
+
+
+def _resolve_command(command: str) -> str:
+    if command == "ffmpeg":
+        system = shutil.which("ffmpeg")
+        if system:
+            return system
+        try:
+            import imageio_ffmpeg
+
+            return imageio_ffmpeg.get_ffmpeg_exe()
+        except Exception:
+            return command
+    if command == "ffprobe":
+        return shutil.which("ffprobe") or command
+    return command
 
 
 def has_ffmpeg() -> bool:

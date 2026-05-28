@@ -8,6 +8,7 @@ from lvs.contracts import DetectionConfig, TrimConfig, CropConfig, ExportConfig,
 from lvs.config import migrate_config
 from lvs.crop import fit_crop_to_aspect
 from lvs.contracts import VideoInfo
+from lvs.diagnostics import signal_summary, tuning_recommendations
 
 
 def test_schema_version_present():
@@ -32,3 +33,17 @@ def test_crop_even_and_in_bounds():
     assert x + w <= info.width
     assert y + h <= info.height
     assert 0 <= conf <= 1
+
+
+def test_diagnostics_no_events_recommends_tuning():
+    import pandas as pd
+
+    df = pd.DataFrame([
+        {"is_light": False, "bright_pct": 0.04, "delta_mean": 3.0, "delta_p99": 5.0, "p99_luma": 170.0},
+        {"is_light": False, "bright_pct": 0.10, "delta_mean": 8.0, "delta_p99": 9.0, "p99_luma": 180.0},
+    ])
+    summary = signal_summary(df)
+    recs = tuning_recommendations(df, [], DetectionConfig())
+    assert summary["frames_sampled"] == 2
+    assert recs
+    assert "No events" in recs[0]

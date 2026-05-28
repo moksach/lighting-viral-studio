@@ -7,12 +7,17 @@ from .contracts import SCHEMA_VERSION, DetectionConfig, TrimConfig, CropConfig, 
 from .utils import even_int
 
 ASPECT_LABELS = [
-    "9:16 vertical — Reels / Shorts / TikTok",
+    "9:16 vertical - Reels / Shorts / TikTok",
     "4:5 vertical feed",
     "1:1 square",
     "16:9 landscape",
     "Original aspect",
 ]
+
+ASPECT_ALIASES = {
+    "9:16 vertical — Reels / Shorts / TikTok": ASPECT_LABELS[0],
+    "9:16 vertical - Reels / Shorts / TikTok": ASPECT_LABELS[0],
+}
 
 DETECTION_MODES = [
     "Balanced",
@@ -50,6 +55,7 @@ DETECTION_PROFILES: Dict[str, Dict[str, Any]] = {
 
 
 def aspect_pair(label: str, video_width: int, video_height: int) -> Tuple[int, int]:
+    label = ASPECT_ALIASES.get(label, label)
     mapping = {
         ASPECT_LABELS[0]: (9, 16),
         ASPECT_LABELS[1]: (4, 5),
@@ -61,6 +67,7 @@ def aspect_pair(label: str, video_width: int, video_height: int) -> Tuple[int, i
 
 
 def output_dimensions(label: str, video_width: int, video_height: int) -> Tuple[int, int]:
+    label = ASPECT_ALIASES.get(label, label)
     mapping = {
         ASPECT_LABELS[0]: (1080, 1920),
         ASPECT_LABELS[1]: (1080, 1350),
@@ -95,6 +102,8 @@ def migrate_config(payload: Dict[str, Any]) -> Dict[str, Any]:
         migrated["post_buffer_sec"] = migrated["after_sec"]
     if "aspect" in migrated and "aspect_label" not in migrated:
         migrated["aspect_label"] = migrated["aspect"]
+    if "aspect_label" in migrated:
+        migrated["aspect_label"] = ASPECT_ALIASES.get(migrated["aspect_label"], migrated["aspect_label"])
     return migrated
 
 
